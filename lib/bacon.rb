@@ -36,6 +36,10 @@ module Bacon
   end
   class <<self; alias summary_at_exit summary_on_exit; end
 
+  def self.contexts
+    @contexts ||= []
+  end
+
   module SpecDoxOutput
     def handle_specification(name)
       puts spaces + name
@@ -132,19 +136,28 @@ module Bacon
 
   class Context
     attr_reader :name, :block
-    
+
     def initialize(name, &block)
       @name = name
-      @before, @after = [], []
+      @before, @after, @contexts, @examples = [], [], [], []
       @block = block
     end
-    
-    def run
+
+    def setup
       return  unless name =~ RestrictContext
-      Counter[:context_depth] += 1
-      Bacon.handle_specification(name) { instance_eval(&block) }
-      Counter[:context_depth] -= 1
+
+      instance_eval(&block)
+      @contexts.each { |context| context.setup }
+
       self
+    end
+
+    def run
+      Counter[:context_depth] += 1
+      Bacon.handle_specification(name) do
+        @examples.each { |example| run_requirement(*example) }
+      end
+      Counter[:context_depth] -= 1
     end
 
     def before(&block); @before << block; end
@@ -158,9 +171,9 @@ module Bacon
       return  unless description =~ RestrictName
       block ||= lambda { should.flunk "not implemented" }
       Counter[:specifications] += 1
-      run_requirement description, block
+      @examples << [description, block]
     end
-    
+
     def should(*args, &block)
       if Counter[:depth]==0
         it('should '+args.first,&block)
@@ -222,7 +235,9 @@ module Bacon
       }
       @before.each { |b| context.before(&b) }
       @after.each { |b| context.after(&b) }
-      context.run
+
+      @contexts << context
+      context
     end
 
     def raise?(*args, &block); block.raise?(*args); end
@@ -283,7 +298,11 @@ end
 
 module Kernel
   private
-  def describe(*args, &block) Bacon::Context.new(args.join(' '), &block).run  end
+
+  def describe(*args, &block)
+    Bacon.contexts << Bacon::Context.new(args.join(' '), &block).setup
+  end
+
   def shared(name, &block)    Bacon::Shared[name] = block                     end
 end
 
